@@ -1,4 +1,8 @@
-// UP TO STEP 46
+// UP TO STEP 92
+// Feature test macros
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
 
 #include <unistd.h>
 #include <termios.h>
@@ -7,10 +11,12 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <string.h>
 
 /* Defines */
 #define KILO_VERSION "0.0.1"
+#define KILO_TAB_STOP 8
 // Emulate Ctrl press
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -28,12 +34,30 @@ enum editorKey {
 };
 
 /* Data */
+typedef struct erow {
+    // Row of text in the editor
+    int size;
+    int rsize;
+    char *chars;
+    char *render;
+} erow;
+
 struct editorConfig {
     // Cursor position
     int cx, cy;
+    // Render coordinates
+    int rx;
+    // Row offset - which row is at the top
+    int rowoff;
+    // Column offset
+    int coloff;
     // Number of rows and columns in terminal
     int screenrows;
     int screencols;
+    // Number of rows in file
+    int numrows;
+    // Array of rows
+    erow *row;
     // Save original termios config to return to
     struct termios orig_termios;
 };
@@ -217,6 +241,85 @@ int getWindowSize(int *rows, int *cols) {
     }
 }
 
+/* Row operations */
+void editorUpdateRow(erow *row) {
+    // Allocate memory then copy row contents
+    int tabs = 0;
+    int j;
+    for (j = 0; j < row->size; j++) { 
+        if (row->chars[j] == '\t') tabs++;
+    }
+
+    free(row->render);
+    row->render = malloc(row->size + tabs*(KILO_TAB_STOP - 1) + 1);
+
+    int idx = 0;
+    for (j = 0; j < row->size; j++) {
+        if (row->chars[j] == '\t') {
+            row->render[idx++] = ' ';
+
+            while (idx % KILO_TAB_STOP != 0) {
+                row->render[idx++] = ' ';
+            }
+        } else {
+            row->render[idx++] = row->chars[j];
+        }
+    }
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
+
+void editorAppendRow(char *s, size_t len) {
+        // Allocate memory for line length and copy text to the row.  Append row to the rows array
+        E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+
+        int at = E.numrows;
+
+        E.row[at].size = len;
+        E.row[at].chars = malloc(len +1);
+        memcpy(E.row[at].chars, s, len);
+        E.row[at].chars[len] = '\0';
+
+        E.row[at].rsize = 0;
+        E.row[at].render = NULL;
+        editorUpdateRow(&E.row[at]);
+
+        E.numrows++;
+}
+
+int editorRowCxToRx(erow *row, int cx) {
+    // Translate tabs to spaces
+    int rx = 0;
+    int j;
+    for (j = 0; j < cx; j++) {
+    if (row->chars[j] == '\t')
+        rx += (KILO_TAB_STOP - 1) - (rx % KILO_TAB_STOP);
+    rx++;
+    }
+    return rx;
+}
+
+/* File I/O */
+void editorOpen(char *filename) {
+    // Open file
+    FILE *fp = fopen(filename, "r");
+    if(!fp)
+        die("fopen");
+
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+    // Read lines until getlines() return -1 (End of file)
+    while((linelen = getline(&line, &linecap, fp)) != -1) {
+        // Strip newline/carriage returns
+        while(linelen > 0 && (line[linelen -1] == '\n' || line[linelen -1] == '\r'))
+            linelen--;
+        editorAppendRow(line, linelen);
+    }
+    free(line);
+    fclose(fp);
+}
+
 /* Append buffer */
 
 // Pointer to buffer start and length
@@ -250,30 +353,70 @@ void abFree(struct abuf *ab) {
 
 
 /* Output */
+void editorScroll() {
+    // Use render cursor values
+    E.rx = 0;
+    if (E.cy < E.numrows) {
+        E.rx = editorRowCxToRx(&E.row[E.cy], E.cx);
+    }
+    // Is cursor above visible window
+    if(E.cy < E.rowoff) {
+        E.rowoff = E.cy;
+    }
+    // Is cursor below visible window
+    if(E.cy >= E.rowoff + E.screenrows) {
+        E.rowoff = E.cy - E.screenrows + 1;
+    }
+    // Is cursor to the left of visible window
+    if(E.rx < E.coloff) {
+        E.coloff = E.rx;
+    }
+    // Is cursor to the right of visible window
+    if(E.rx >= E.coloff + E.screencols) {
+        E.coloff = E.rx - E.screencols + 1;
+    }
+}
+
 void editorDrawRows(struct abuf *ab) {
     // Draw column of tildes on left side of screen
     int y;
     for(y = 0; y < E.screenrows; y++){
-        // Display welcome message 1/3 way down
-        if(y == E.screenrows / 3) {
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome),
-            "Kilo editor -- version %s", KILO_VERSION);
-            // Truncate message
-            if(welcomelen > E.screencols)
-                welcomelen = E.screencols;
-                // Pad message to centre of screen
-            int padding = (E.screencols - welcomelen) / 2;
-            if(padding) {
-                abAppend(ab, "~", 1);
-                padding--;
-            }
-            while(padding--)
-                abAppend(ab, " ", 1);
+        // If text doesn't fit on one screen
+        int filerow = y + E.rowoff;
+        if(filerow >= E.numrows) {
+            //Draw empty row with a tilde at the start
 
-            abAppend(ab, welcome, welcomelen);
+            // Display welcome message 1/3 way down when an empty file is opened
+            if(E.numrows == 0 && y == E.screenrows / 3) {
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome),
+                "Kilo editor -- version %s", KILO_VERSION);
+                // Truncate message
+                if(welcomelen > E.screencols)
+                    welcomelen = E.screencols;
+                    // Pad message to centre of screen
+                int padding = (E.screencols - welcomelen) / 2;
+                if(padding) {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while(padding--)
+                    abAppend(ab, " ", 1);
+
+                abAppend(ab, welcome, welcomelen);
+            } else {
+                abAppend(ab, "~", 1);
+            }
         } else {
-            abAppend(ab, "~", 1);
+            // Draw row with text in it
+            // Subtract column offset for horizontal scrolling
+            int len = E.row[filerow].rsize - E.coloff;
+            // User scrolled past 0
+            if(len < 0)
+                len = 0;
+            if(len > E.screencols)
+                len = E.screencols;
+            abAppend(ab, &E.row[filerow].render[E.coloff], len);
         }
 
         // Clear the row (K - erase in line - erase part of the line.  0 default - erase right from cursor)
@@ -290,6 +433,7 @@ void editorRefreshScreen() {
     // Write bytes to terminal.
     // \x1b (27) escape character
     // [ follows in escape characters
+    editorScroll();
 
     // Init append buffer
     struct abuf ab = ABUF_INIT;
@@ -302,7 +446,7 @@ void editorRefreshScreen() {
     editorDrawRows(&ab);
     // Move cursor to current location
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy +1, E.cx + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
     abAppend(&ab, buf, strlen(buf));
     // Show cursor again
     abAppend(&ab, "\x1b[?25h", 6);
@@ -317,15 +461,25 @@ void editorRefreshScreen() {
 /* Input */
 void editorMoveCursor(int key) {
     // Move cursor when user presses arrow keys
+    // Check if cursor is on an actual line
+    erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+
     switch(key) {
-        case ARROW_LEFT:
-            if(E.cx != 0){
-                E.cx--;
-            }
-            break;
+    case ARROW_LEFT:
+        if (E.cx != 0) {
+            E.cx--;
+        } else if (E.cy > 0) {
+            // Move to end of previous line
+            E.cy--;
+            E.cx = E.row[E.cy].size;
+        }
+        break;
         case ARROW_RIGHT:
-            if(E.cx != E.screencols - 1) {
-                E.cx++;
+            if(row && E.cx < row->size) {
+                    E.cx++;
+            } else if(row && E.cx == row->size) {
+                E.cy++;
+                E.cx = 0;
             }
             break;
         case ARROW_UP:
@@ -334,10 +488,17 @@ void editorMoveCursor(int key) {
             }
             break;
         case ARROW_DOWN:
-            if(E.cy != E.screenrows - 1) {
+            if(E.cy < E.numrows) {
                 E.cy++;
             }
             break;
+    }
+
+    // Snap to end of line
+    row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+    int rowlen = row ? row->size : 0;
+    if (E.cx > rowlen) {
+        E.cx = rowlen;
     }
 }
 
@@ -359,12 +520,24 @@ void editorProcessKeypress() {
             break;
 
         case END_KEY:
-            E.cx = E.screencols - 1;
+            // Go to end of the line
+            if(E.cy < E.numrows) {
+                E.cx = E.row[E.cy].size;
+            }
             break;
         
         case PAGE_UP:
         case PAGE_DOWN:
             {
+                // Position cursor at top/bottom of screen and simulate a screen's worth of up or down arrow presses before refresh
+                if(c == PAGE_UP) {
+                    E.cy = E.rowoff;
+                } else if(c == PAGE_DOWN) {
+                    E.cy = E.rowoff + E.screenrows - 1;
+                    if(E.cy > E.numrows) {
+                        E.cy = E.numrows;
+                    }
+                }
                 // Get number of rows on screen and scroll up that many times.
                 int times = E.screenrows;
                 while (times--)
@@ -386,14 +559,27 @@ void initEditor() {
     // Init cursor values
     E.cx = 0;
     E.cy = 0;
+    // Init render cursor values
+    E.rx = 0;
+    // Init row offset
+    E.rowoff = 0;
+    // Init column offset
+    E.coloff = 0;
+    // Init number of rows for editor
+    E.numrows = 0;
+    E.row = NULL;
+
     // Set window size
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     enableRawMode();
     initEditor();
+    if(argc >= 2) {
+        editorOpen(argv[1]);
+    }
 
     while(1) {
         editorRefreshScreen();
