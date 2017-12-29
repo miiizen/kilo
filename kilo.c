@@ -1,9 +1,10 @@
 // UP TO STEP 92
-// Feature test macros
+/* Feature test macros */
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
+/* Includes */
 #include <unistd.h>
 #include <termios.h>
 #include <errno.h>
@@ -58,6 +59,8 @@ struct editorConfig {
     int numrows;
     // Array of rows
     erow *row;
+    // Name of currently open file
+    char *filename;
     // Save original termios config to return to
     struct termios orig_termios;
 };
@@ -301,6 +304,10 @@ int editorRowCxToRx(erow *row, int cx) {
 
 /* File I/O */
 void editorOpen(char *filename) {
+    // Set filename
+    free(E.filename);
+    E.filename = strdup(filename);
+
     // Open file
     FILE *fp = fopen(filename, "r");
     if(!fp)
@@ -423,10 +430,39 @@ void editorDrawRows(struct abuf *ab) {
         abAppend(ab, "\x1b[K", 3);
 
         // Don't print \r\n on last line
-        if(y < E.screenrows - 1) {
-            abAppend(ab, "\r\n", 2);
+        abAppend(ab, "\r\n", 2);
+    }
+}
+
+void editorDrawStatusBar(struct abuf *ab) {
+    // Invert colours
+    abAppend(ab, "\x1b[7m", 4);
+
+    // Status and row status buffer
+    char status[80], rstatus[80];
+    // Get length of status containing filename and number of lines
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No Name]", E.numrows);
+    // Get current line number
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
+    // Trim length if it goes over the number of columns on the screen
+    if(len > E.screencols) {
+        len = E.screencols;
+    }
+    // Add to output buffer
+    abAppend(ab, status, len);
+    // Generate remaining whitespace on buffer
+    while(len < E.screencols) {
+        // Right align rstatus by continuing to print spaces until we reach the correct point on the line
+        if(E.screencols - len == rlen) {
+            abAppend(ab, rstatus, rlen);
+            break;
+        } else {
+            abAppend(ab, " ", 1);
+            len++;
         }
     }
+    // Return to normal text formatting
+    abAppend(ab, "\x1b[m", 3);
 }
 
 void editorRefreshScreen() {
@@ -442,8 +478,10 @@ void editorRefreshScreen() {
     abAppend(&ab, "\x1b[?25l", 6);
     // Reposition cursor (H) to top left corner
     abAppend(&ab, "\x1b[H", 3);
-    // Draw tildes
+    // Draw row of text
     editorDrawRows(&ab);
+    // Draw status bar
+    editorDrawStatusBar(&ab);
     // Move cursor to current location
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
@@ -554,7 +592,7 @@ void editorProcessKeypress() {
 
 /* Init */
 void initEditor() {
-    // Init all fields in E (editor config) struct
+    /* Init all fields in E (editor config) struct */
 
     // Init cursor values
     E.cx = 0;
@@ -567,11 +605,16 @@ void initEditor() {
     E.coloff = 0;
     // Init number of rows for editor
     E.numrows = 0;
+    // Init current row to null
     E.row = NULL;
+    // Init currently open filename to null
+    E.filename = NULL;
 
     // Set window size
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
+    // Make room for status bar
+    E.screenrows -= 1;
 }
 
 int main(int argc, char *argv[]) {
