@@ -5,15 +5,17 @@
 #define _GNU_SOURCE
 
 /* Includes */
-#include <unistd.h>
-#include <termios.h>
-#include <errno.h>
-#include <stdlib.h>
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
-#include <string.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
 
 /* Defines */
 #define KILO_VERSION "0.0.1"
@@ -61,6 +63,10 @@ struct editorConfig {
     erow *row;
     // Name of currently open file
     char *filename;
+    // Status message buffer
+    char statusmsg[80];
+    // Time a message is displayed so it can be removed seconds after
+    time_t statusmsg_time;
     // Save original termios config to return to
     struct termios orig_termios;
 };
@@ -463,6 +469,22 @@ void editorDrawStatusBar(struct abuf *ab) {
     }
     // Return to normal text formatting
     abAppend(ab, "\x1b[m", 3);
+    // Draw empty newline
+    abAppend(ab, "\r\n", 2);
+}
+
+void editorDrawMessageBar(struct abuf *ab) {
+    // Clear message bar
+    abAppend(ab, "\x1b[K", 3);
+    // Make sure message will fit the width of screen
+    int msglen = strlen(E.statusmsg);
+    if(msglen > E.screencols) {
+        msglen = E.screencols;
+    }
+    // Display if the message is less than 5 seconds old
+    if(msglen && (time(NULL) - E.statusmsg_time < 5)) {
+        abAppend(ab, E.statusmsg, msglen);
+    }
 }
 
 void editorRefreshScreen() {
@@ -482,6 +504,8 @@ void editorRefreshScreen() {
     editorDrawRows(&ab);
     // Draw status bar
     editorDrawStatusBar(&ab);
+    // Draw message bar
+    editorDrawMessageBar(&ab);
     // Move cursor to current location
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
@@ -489,11 +513,28 @@ void editorRefreshScreen() {
     // Show cursor again
     abAppend(&ab, "\x1b[?25h", 6);
 
-    // Write buffer to output (25h - cursor on)
+    // Write buffer to output
     write(STDOUT_FILENO, ab.b, ab.len);
 
     // Free memory
     abFree(&ab);
+}
+
+void editorSetStatusMessage(const char *fmt, ...) {
+    /* Variadic function - can take different number of arguments */
+    // Deal with multiple arguments:
+
+    // List of arguments passed in
+    va_list ap;
+    // Pass arg before ... so addresses of ... args can be found
+    va_start(ap, fmt);
+    // REad format string and call va_arg()
+    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+    // End parsing arguments
+    va_end(ap);
+    // Set to current time
+    E.statusmsg_time = time(NULL);
+
 }
 
 /* Input */
@@ -609,12 +650,16 @@ void initEditor() {
     E.row = NULL;
     // Init currently open filename to null
     E.filename = NULL;
+    // init status message buffer
+    E.statusmsg[0] = '\0';
+    // Init status message time
+    E.statusmsg_time = 0;
 
     // Set window size
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
-    // Make room for status bar
-    E.screenrows -= 1;
+    // Make room for status bar and status message
+    E.screenrows -= 2;
 }
 
 int main(int argc, char *argv[]) {
@@ -623,6 +668,8 @@ int main(int argc, char *argv[]) {
     if(argc >= 2) {
         editorOpen(argv[1]);
     }
+
+    editorSetStatusMessage("HELP: CTRL-Q = quit");
 
     while(1) {
         editorRefreshScreen();
