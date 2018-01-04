@@ -83,7 +83,7 @@ void editorSetStatusMessage(const char *fmt, ...);
 
 void editorRefreshScreen();
 
-char *editorPrompt(char *prompt);
+char *editorPrompt(char *prompt, void (*callback)(char *, int));
 
 /* Terminal */
 void die(const char *s) {
@@ -380,6 +380,22 @@ int editorRowCxToRx(erow *row, int cx) {
     return rx;
 }
 
+int editorRowRxToCx(erow *row, int rx) {
+    int cur_rx = 0;
+    int cx;
+    for(cx = 0; cx < row->size; cx++) {
+        // Translate tabs into spaces
+        if(row->chars[cx] == '\t')
+            cur_rx += (KILO_TAB_STOP - 1) - (cur_rx % KILO_TAB_STOP);
+        cur_rx++;
+
+        // Once cur_rx hits the end of the rendered line, return the cx value
+        if(cur_rx > rx)
+            return cx;
+    }
+    return cx;
+}
+
 /* Editor operations */
 void editorInsertChar(int c) {
     // Check if cursor is on the tilde after the end of the file
@@ -483,7 +499,7 @@ void editorOpen(char *filename) {
 void editorSave() {
     // Prompt user to provide filename if there is not one already
     if(E.filename == NULL) {
-        E.filename = editorPrompt("Save as: %s");
+        E.filename = editorPrompt("Save as: %s", NULL);
         if(E.filename == NULL) {
             editorSetStatusMessage("Save aborted.");
         }
@@ -510,6 +526,90 @@ void editorSave() {
     free(buf);
     editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
+
+/* Find */
+void editorFindCallback(char *query, int key) {
+    // -1 if no last match or row match was on
+    // Only set this to anything other than -1 when an arrow key is pressed
+    static int last_match = -1;
+
+    // 1: search forward, -1: search backward
+    static int direction = 1;
+
+    // Stop if user presses enter or escape
+    if(key == '\r' || key == '\x1b') {
+        // Leave search mode, reset values to initial
+        last_match = -1;
+        direction = 1;
+        return;
+    } else if(key == ARROW_RIGHT || key == ARROW_DOWN) {
+        // Search forwards
+        direction = 1;
+    } else if(key == ARROW_LEFT || key == ARROW_UP) {
+        // Search backwards
+        direction = -1;
+    } else {
+        last_match = -1;
+        direction = 1;
+    }
+
+    // You can only search forward if there are no results
+    if(last_match == -1)
+        direction = 1;
+    
+    // Index of row we are searching
+    int current = last_match;
+    // Loop through lines and search for string in each line
+    int i;
+    for(i = 0; i < E.numrows; i++) {
+        // Move forward/back a line
+        current += direction;
+        // Allow wrap around to beginning of file from end or vice versa
+        if(current == -1) {
+            current = E.numrows - 1;
+        }
+        else if(current == E.numrows) {
+            current = 0;
+        }
+        
+        erow *row = &E.row[current];
+
+        char *match = strstr(row->render, query);
+        if(match) {
+            // Set up last match for the next time round
+            last_match = current;
+            E.cy = current;
+            // Move cursor to the start of the result
+            E.cx = editorRowRxToCx(row, match - row->render);
+            // Scroll result to the top next screen refresh
+            E.rowoff = E.numrows;
+            break;
+        }
+    }
+}
+
+void editorFind() {
+    // Save data to return cursor to original position
+    int saved_cx = E.cx;
+    int saved_cy = E.cy;
+    int saved_coloff = E.coloff;
+    int saved_rowoff = E.rowoff;
+
+    // Get query
+    char *query = editorPrompt("Search: %s (ESC/Arrow keys/Enter)", editorFindCallback);
+    
+    // Free memory
+    if(query) {
+        free(query);
+    } else {
+        // Query is null, they pressed escape
+        E.cx = saved_cx;
+        E.cy = saved_cy;
+        E.coloff = saved_coloff;
+        E.rowoff = saved_rowoff;
+    }
+}
+
 
 /* Append buffer */
 
@@ -718,7 +818,7 @@ void editorSetStatusMessage(const char *fmt, ...) {
 }
 
 /* Input */
-char *editorPrompt(char *prompt) {
+char *editorPrompt(char *prompt, void (*callback)(char *, int)) {
     // Allocate memeory for input buffer
     size_t bufsize = 128;
     char *buf = malloc(bufsize);
@@ -742,12 +842,18 @@ char *editorPrompt(char *prompt) {
         } else if(c == '\x1b') {
             // User presses escape - cancel save
             editorSetStatusMessage(" ");
+            // Call callback function if one is specified
+            if(callback)
+                callback(buf, c);
             free(buf);
             return NULL;
         } else if(c == '\r') {
             // User pressed enter, return buffer if it is not empty
             if(buflen != 0) {
                 editorSetStatusMessage(" ");
+                // Call callback if specified
+                if(callback)
+                    callback(buf, c);
                 return buf;
             }
         } else if(!iscntrl(c) && c < 128) {
@@ -761,6 +867,9 @@ char *editorPrompt(char *prompt) {
             buf[buflen++] = c;
             buf[buflen] = '\0';
         }
+        // Call callback if specified
+        if(callback)
+            callback(buf, c);
     }
 
 }
@@ -846,6 +955,11 @@ void editorProcessKeypress() {
             if(E.cy < E.numrows) {
                 E.cx = E.row[E.cy].size;
             }
+            break;
+
+        case CTRL_KEY('f'):
+            // Find
+            editorFind();
             break;
 
         case BACKSPACE:
@@ -935,7 +1049,7 @@ int main(int argc, char *argv[]) {
         editorOpen(argv[1]);
     }
 
-    editorSetStatusMessage("HELP: Ctrl-S = save | CTRL-Q = quit");
+    editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-F = find | CTRL-Q = quit");
 
     while(1) {
         editorRefreshScreen();
