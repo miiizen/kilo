@@ -126,6 +126,8 @@ struct editorConfig E;
 
 // Extensions for filetypes
 char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
+char *Python_HL_Extensions[] = {".py"};
+
 // Keywords. keywords1 are NULL terminated, keywords2 are pipe terminated
 char *C_HL_keywords[] = {
     "switch", "if", "while", "for", "break", "continue", "return", "else",
@@ -133,6 +135,23 @@ char *C_HL_keywords[] = {
 
     "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
     "void|", NULL
+};
+
+char *Python_HL_keywords[] = { 
+    "False", "class", "finally", "is", "return", "None", "continue", "for", 
+    "lambda", "try", "True", "def", "from", "nonlocal", "while", "and", "del", 
+    "global", "not", "with", "as", "elif", "if", "or", "yield", "assert", "else", 
+    "import", "pass", "break", "except", "in", "raise" ,
+
+    "abs|", "dict|", "help|", "min|", "setattr|", "all|", "dir|", "hex|", "next|",
+    "slice|", "any|", "divmod|", "id|", "object|", "sorted|", "ascii|", "enumerate|", 
+    "input|", "oct|", "staticmethod|", "bin|", "eval|", "int|", "open|", "str|", "bool|",
+    "exec|", "isinstance|", "ord|", "sum|", "bytearray|", "filter|", "issubclass|", "pow|",
+    "super|", "bytes|", "float|", "iter|", "print|", "tuple|", "callable|", "format|", "len|", 
+    "property|", "type|", "chr|", "frozenset|", "list|", "range|", "vars|", "classmethod|",
+    "gettattr|", "locals|", "repr|", "zip|", "compile|", "globals|", "map|", "reversed|",
+    "__import__|", "complex|", "hasattr|", "max|", "round|", "delattr|", "hash|", "memoryview|",
+    "set|", NULL
 };
 
 // Highlight database
@@ -144,6 +163,13 @@ struct editorSyntax HLDB[] = {
         "//", "/*", "*/",
         HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
     },
+    {
+        "Python",
+        Python_HL_Extensions,
+        Python_HL_keywords,
+        "#", "\"\"\"", "\"\"\"",
+        HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
+    }
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
