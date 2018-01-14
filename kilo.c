@@ -743,9 +743,31 @@ void editorInsertChar(int c) {
     if(E.cy == E.numrows) {
         editorInsertRow(E.numrows, "", 0);
     }
+
     // Insert character and move cursor
     editorRowInsertChar(&E.row[E.cy], E.cx, c);
     E.cx++;
+
+    // Auto complete brackets and braces etc.
+    switch(c) {
+        case 123:
+            // {            
+        case 91:
+            // [
+            // Closing bracket is two away for { [
+            editorRowInsertChar(&E.row[E.cy], E.cx, c + 2);
+            break;            
+        case 40:
+            // (
+            editorRowInsertChar(&E.row[E.cy], E.cx, c + 1);
+            break;
+        case 34:
+            // "
+        case 39:
+            // '
+            editorRowInsertChar(&E.row[E.cy], E.cx, c);
+            break;
+    }
 }
 
 void editorInsertNewLine() {
