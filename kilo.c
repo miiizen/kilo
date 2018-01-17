@@ -1,4 +1,6 @@
-// UP TO STEP 175
+// TODO
+// Add more settings
+
 /* Feature test macros */
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
@@ -32,6 +34,8 @@ enum editorKey {
     ARROW_RIGHT,
     ARROW_UP,
     ARROW_DOWN,
+    ALT_UP,
+    ALT_DOWN,
     DEL_KEY,
     HOME_KEY,
     END_KEY,
@@ -121,6 +125,18 @@ struct editorConfig {
 };
 
 struct editorConfig E;
+
+// Settings loaded from the user config file
+struct userConfig {
+    // Number of spaces to tabs
+    int tabNo;
+    // Times to hit Ctrl-Q to quit without saving
+    int quitTimes;
+};
+
+struct userConfig U;
+
+int quit_times;
 
 /* Filetypes */
 
@@ -254,7 +270,7 @@ int editorReadKey() {
 
     // Escape sequences
     if(c == '\x1b') {
-        char seq[3];
+        char seq[5];
 
         // Read 2 bytes.  If timeout, user pressed escape
         if(read(STDIN_FILENO, &seq[0], 1) != 1)
@@ -281,6 +297,14 @@ int editorReadKey() {
                         case '6': return PAGE_DOWN;
                         case '7': return HOME_KEY;
                         case '8': return END_KEY;
+                    }
+                } else if(seq[2] == ';' && seq[3] == '3') {
+                    // ALT keypress
+                    switch(seq[4]) {
+                        case 'A':
+                            return ALT_UP;
+                        case 'B':
+                            return ALT_DOWN;
                     }
                 }
             } else {
@@ -592,14 +616,14 @@ void editorUpdateRow(erow *row) {
     }
 
     free(row->render);
-    row->render = malloc(row->size + tabs*(KILO_TAB_STOP - 1) + 1);
+    row->render = malloc(row->size + tabs*(U.tabNo - 1) + 1);
 
     int idx = 0;
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == '\t') {
             row->render[idx++] = ' ';
 
-            while (idx % KILO_TAB_STOP != 0) {
+            while (idx % U.tabNo != 0) {
                 row->render[idx++] = ' ';
             }
         } else {
@@ -631,7 +655,7 @@ void editorInsertRow(int at, char *s, size_t len) {
     E.row[at].idx = at;
 
     E.row[at].size = len;
-    E.row[at].chars = malloc(len +1);
+    E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
 
@@ -714,7 +738,7 @@ int editorRowCxToRx(erow *row, int cx) {
     int j;
     for (j = 0; j < cx; j++) {
     if (row->chars[j] == '\t')
-        rx += (KILO_TAB_STOP - 1) - (rx % KILO_TAB_STOP);
+        rx += (U.tabNo - 1) - (rx % U.tabNo);
     rx++;
     }
     return rx;
@@ -726,7 +750,7 @@ int editorRowRxToCx(erow *row, int rx) {
     for(cx = 0; cx < row->size; cx++) {
         // Translate tabs into spaces
         if(row->chars[cx] == '\t')
-            cur_rx += (KILO_TAB_STOP - 1) - (cur_rx % KILO_TAB_STOP);
+            cur_rx += (U.tabNo - 1) - (cur_rx % U.tabNo);
         cur_rx++;
 
         // Once cur_rx hits the end of the rendered line, return the cx value
@@ -783,6 +807,7 @@ void editorInsertNewLine() {
         row->chars[row->size] = '\0';
         editorUpdateRow(row);
     }
+    
     E.cy++;
     E.cx = 0;
 }
@@ -842,8 +867,9 @@ void editorOpen(char *filename) {
 
     // Open file
     FILE *fp = fopen(filename, "r");
-    if(!fp)
+    if(!fp) {
         die("fopen");
+    }
 
     char *line = NULL;
     size_t linecap = 0;
@@ -891,6 +917,52 @@ void editorSave() {
     }
     free(buf);
     editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
+}
+
+void configOpen(char *filename) {
+    // Init temp user config
+    struct userConfig ucTemp;
+
+    // Open file
+    FILE *fp = fopen(filename, "r");
+    char *line = NULL;
+
+    if(fp) {
+        size_t linecap = 0;
+        ssize_t linelen;
+
+        // Read lines until getline returns -1 (EOF)
+        while((linelen = getline(&line, &linecap, fp)) != -1) {
+            // Strip newline/carriage returns
+            while(linelen > 0 && (line[linelen -1] == '\n' || line[linelen -1] == '\r'))
+                linelen--;
+
+            char setting[20];
+            char value[20];
+
+            // Handle each setting here, ignoring commented lines
+            if(line[0] == '#' || sscanf(line, "%s %s", setting, value) != 2) {
+                // Fail
+                continue;
+            } else {
+                if(strcmp(setting, "tabstop")) {
+                    // tabstop setting
+                    int stop = atoi(value);
+                    ucTemp.tabNo = stop;
+                } else if(strcmp(setting, "quittimes")) {
+                    // quittimes setting
+                    int times = atoi(value);
+                    ucTemp.quitTimes = times;
+                }
+            }
+        }
+        U = ucTemp;
+    } else {
+        die("fopen");
+    }
+    free(line);
+    fclose(fp);
+    return;
 }
 
 /* Find */
@@ -1346,8 +1418,6 @@ void editorMoveCursor(int key) {
 }
 
 void editorProcessKeypress() {
-    static int quit_times = KILO_QUIT_TIMES;
-
     // Handles incoming keypresses
     int c = editorReadKey();
 
@@ -1423,6 +1493,10 @@ void editorProcessKeypress() {
         case ARROW_RIGHT:
             editorMoveCursor(c);
             break;
+
+        case ALT_UP:
+        case ALT_DOWN:
+            // doesn't work lol
         
         case CTRL_KEY('l'):
         case '\x1b':
@@ -1434,7 +1508,7 @@ void editorProcessKeypress() {
             break;
     }
 
-    quit_times = KILO_QUIT_TIMES;
+    quit_times = U.quitTimes;
 }
 
 /* Init */
@@ -1470,11 +1544,15 @@ void initEditor() {
         die("getWindowSize");
     // Make room for status bar and status message
     E.screenrows -= 2;
+
+    configOpen("bin/.kilorc");
+    quit_times = U.quitTimes;
 }
 
 int main(int argc, char *argv[]) {
     enableRawMode();
     initEditor();
+
     if(argc >= 2) {
         editorOpen(argv[1]);
     }
